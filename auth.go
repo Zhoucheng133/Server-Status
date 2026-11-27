@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/limiter"
@@ -144,6 +143,22 @@ func refreshHash(token string) string {
 	return fmt.Sprintf("%x", hash)
 }
 
+const bcryptSHA256Prefix = "bcrypt-sha256:"
+
+// Encode the full password digest to fit bcrypt's 72-byte input limit.
+func bcryptInput(password string) []byte {
+	digest := sha256.Sum256([]byte(password))
+	return base64.RawStdEncoding.AppendEncode(nil, digest[:])
+}
+
+func passwordMatches(stored, password string) bool {
+	if hash, ok := strings.CutPrefix(stored, bcryptSHA256Prefix); ok {
+		return bcrypt.CompareHashAndPassword([]byte(hash), bcryptInput(password)) == nil
+	}
+	// Older registrations used bcrypt directly and accepted at most 72 bytes.
+	return len(password) <= 72 && bcrypt.CompareHashAndPassword([]byte(stored), []byte(password)) == nil
+}
+
 func (s *Service) authRequired(c fiber.Ctx) error {
 	value := c.Get("Authorization")
 	if !strings.HasPrefix(value, "Bearer ") {
@@ -172,9 +187,8 @@ func (s *Service) registerAuthRoutes(app fiber.Router) {
 		if err := c.Bind().Body(&request); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 		}
-		request.Username = strings.TrimSpace(request.Username)
-		if utf8.RuneCountInString(request.Username) < 2 || utf8.RuneCountInString(request.Username) > 64 || len(request.Password) < 10 || len(request.Password) > 72 {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "username must be 2-64 characters and password 10-72 bytes"})
+		if request.Username == "" || request.Password == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "username and password are required"})
 		}
 		exists, err := s.store.hasAccount()
 		if err != nil {
@@ -183,7 +197,7 @@ func (s *Service) registerAuthRoutes(app fiber.Router) {
 		if exists {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "the single account has already been created"})
 		}
-		hash, err := bcrypt.GenerateFromPassword([]byte(request.Password), bcrypt.DefaultCost)
+		hash, err := bcrypt.GenerateFromPassword(bcryptInput(request.Password), bcrypt.DefaultCost)
 		if err != nil {
 			return internalError(c, err)
 		}
@@ -191,7 +205,7 @@ func (s *Service) registerAuthRoutes(app fiber.Router) {
 		if err != nil {
 			return internalError(c, err)
 		}
-		result, err := tx.Exec(`INSERT INTO users (id, username, password_hash, created_at) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO NOTHING`, request.Username, string(hash), time.Now().Unix())
+		result, err := tx.Exec(`INSERT INTO users (id, username, password_hash, created_at) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO NOTHING`, request.Username, bcryptSHA256Prefix+string(hash), time.Now().Unix())
 		if err != nil {
 			tx.Rollback()
 			return internalError(c, err)
@@ -221,15 +235,12 @@ func (s *Service) registerAuthRoutes(app fiber.Router) {
 		if err := c.Bind().Body(&request); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 		}
-		if len(request.Password) > 72 {
-			return c.SendStatus(fiber.StatusUnauthorized)
-		}
 		var hash string
-		err := s.store.db.QueryRow(`SELECT password_hash FROM users WHERE id = 1 AND username = ?`, strings.TrimSpace(request.Username)).Scan(&hash)
+		err := s.store.db.QueryRow(`SELECT password_hash FROM users WHERE id = 1 AND username = ?`, request.Username).Scan(&hash)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return internalError(c, err)
 		}
-		if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(request.Password)) != nil {
+		if err != nil || !passwordMatches(hash, request.Password) {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid username or password"})
 		}
 		tx, err := s.store.db.Begin()

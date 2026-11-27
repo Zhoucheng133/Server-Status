@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,7 +60,7 @@ func TestSingleAccountAndRefreshRotation(t *testing.T) {
 	s := newTestService(t)
 	app := fiber.New()
 	s.registerRoutes(app)
-	auth := authRequest{Username: "管理者", Password: "testing password"}
+	auth := authRequest{Username: "a", Password: "1"}
 	var first, renewed tokenPair
 	var status struct {
 		NeedsSetup bool `json:"needs_setup"`
@@ -68,6 +69,8 @@ func TestSingleAccountAndRefreshRotation(t *testing.T) {
 	if !status.NeedsSetup {
 		t.Fatal("new installation should allow registration")
 	}
+	callAPI(t, app, "POST", "/api/auth/register", "", authRequest{Password: auth.Password}, nil, 400)
+	callAPI(t, app, "POST", "/api/auth/register", "", authRequest{Username: auth.Username}, nil, 400)
 	callAPI(t, app, "POST", "/api/auth/register", "", auth, &first, 201)
 	callAPI(t, app, "POST", "/api/auth/register", "", auth, nil, 409)
 	callAPI(t, app, "POST", "/api/auth/login", "", authRequest{Username: auth.Username, Password: "wrong"}, nil, 401)
@@ -76,12 +79,16 @@ func TestSingleAccountAndRefreshRotation(t *testing.T) {
 	if status.NeedsSetup {
 		t.Fatal("registration should be closed")
 	}
-	var hash []byte
+	var hash string
 	if err := s.store.db.QueryRow("SELECT password_hash FROM users").Scan(&hash); err != nil {
 		t.Fatal(err)
 	}
-	if err := bcrypt.CompareHashAndPassword(hash, []byte(auth.Password)); err != nil {
-		t.Fatal(err)
+	bcryptHash, hasPrefix := strings.CutPrefix(hash, "bcrypt-sha256:")
+	if !hasPrefix {
+		t.Fatal("new account lacks a password hash format marker")
+	}
+	if _, err := bcrypt.Cost([]byte(bcryptHash)); err != nil {
+		t.Fatalf("stored password is not a bcrypt hash: %v", err)
 	}
 	for _, path := range []string{"/api/live", "/api/ips", "/api/log-sources", "/api/auth/me"} {
 		callAPI(t, app, "GET", path, "", nil, nil, 401)
@@ -113,6 +120,42 @@ func TestSingleAccountAndRefreshRotation(t *testing.T) {
 	if !me.Configured || len(me.Sources) != 1 || me.Sources[0] != ok.Sources[0] {
 		t.Fatalf("unexpected settings: %+v", me)
 	}
+}
+
+func TestLongUnicodeCredentialsPreserveAllCharacters(t *testing.T) {
+	s := newTestService(t)
+	app := fiber.New()
+	s.registerRoutes(app)
+	prefix := strings.Repeat("密", 24) // 72 UTF-8 bytes
+	auth := authRequest{Username: " " + strings.Repeat("名", 65) + " ", Password: prefix + " 甲 "}
+	var pair tokenPair
+	callAPI(t, app, "POST", "/api/auth/register", "", auth, &pair, 201)
+	var me struct{ Username string }
+	callAPI(t, app, "GET", "/api/auth/me", pair.AccessToken, nil, &me, 200)
+	if me.Username != auth.Username {
+		t.Fatalf("stored username %q differs from registered username %q", me.Username, auth.Username)
+	}
+	callAPI(t, app, "POST", "/api/auth/login", "", auth, nil, 200)
+	callAPI(t, app, "POST", "/api/auth/login", "", authRequest{Username: strings.TrimSpace(auth.Username), Password: auth.Password}, nil, 401)
+	callAPI(t, app, "POST", "/api/auth/login", "", authRequest{Username: auth.Username, Password: prefix + " 乙 "}, nil, 401)
+	callAPI(t, app, "POST", "/api/auth/login", "", authRequest{Username: auth.Username, Password: strings.TrimSpace(auth.Password)}, nil, 401)
+}
+
+func TestLoginWithLegacyBcryptPassword(t *testing.T) {
+	s := newTestService(t)
+	app := fiber.New()
+	s.registerRoutes(app)
+	auth := authRequest{Username: "owner", Password: strings.Repeat("a", 72)}
+	hash, err := bcrypt.GenerateFromPassword([]byte(auth.Password), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.store.db.Exec(`INSERT INTO users (id, username, password_hash, created_at) VALUES (1, ?, ?, ?)`, auth.Username, string(hash), time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	callAPI(t, app, "POST", "/api/auth/login", "", authRequest{Username: auth.Username, Password: auth.Password + "!"}, nil, 401)
+	callAPI(t, app, "POST", "/api/auth/login", "", auth, nil, 200)
 }
 
 func TestPublicSiteCountsAndRetention(t *testing.T) {
