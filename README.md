@@ -22,6 +22,29 @@ bun install --frozen-lockfile
 bun run dev
 ```
 
+## Docker 部署
+
+在项目根目录构建镜像。首次克隆请先拉取前端子模块。
+
+```sh
+git submodule update --init
+docker build -t server-status .
+```
+
+在 Linux 服务器上运行以下命令。容器使用宿主机网络以采集服务器接口的上下行速率，服务监听本机 3000 端口，适合由同机 Caddy 反向代理。可按需要调整 `LISTEN_ADDR`。[Docker 主机网络说明](https://docs.docker.com/engine/network/drivers/host/)
+
+```sh
+mkdir -p db caddy_log
+docker run -d --name server-status --restart unless-stopped \
+  --network host --user "$(id -u):$(id -g)" \
+  -e LISTEN_ADDR=127.0.0.1:3000 \
+  --mount "type=bind,source=$PWD/db,target=/app/db" \
+  --mount "type=bind,source=$PWD/caddy_log,target=/app/caddy_log,readonly" \
+  server-status
+```
+
+挂载现有 `db` 目录可沿用已有账户和历史数据。将第二个挂载的源目录指向实际 Caddy 日志目录，并确保运行用户能写入数据库目录、读取日志。使用桥接网络时，将 `--network host` 和 `LISTEN_ADDR` 两项替换为 `-p 127.0.0.1:3000:3000`，带宽统计将反映容器网络接口。
+
 ## 日志与访问统计
 
 将 Caddy 的 JSON Lines 访问日志写入 `./caddy_log/`，每条记录以换行结束。站点名取文件名去掉 `.json` 后的部分。一个文件对应一个折线图筛选项，例如 `blog.example.com.json` 对应 `blog.example.com`。每个站点可在 Caddyfile 中配置如下日志块，输出路径替换成实际的绝对路径。

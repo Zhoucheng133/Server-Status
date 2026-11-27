@@ -1,0 +1,11 @@
+.git
+**/.git
+**/.DS_Store
+**/.env
+**/.env.*
+**/node_modules
+frontend/dist
+frontend/.vscode
+db
+caddy_log
+test
