@@ -36,14 +36,16 @@ docker build -t server-status .
 ```sh
 mkdir -p db caddy_log
 docker run -d --name server-status --restart unless-stopped \
-  --network host --user "$(id -u):$(id -g)" \
+  --network host \
   -e LISTEN_ADDR=127.0.0.1:3000 \
-  --mount "type=bind,source=$PWD/db,target=/app/db" \
-  --mount "type=bind,source=$PWD/caddy_log,target=/app/caddy_log,readonly" \
+  -v "$PWD/db:/app/db" \
+  -v "$PWD/caddy_log:/app/caddy_log:ro" \
   server-status
 ```
 
-挂载现有 `db` 目录可沿用已有账户和历史数据。将第二个挂载的源目录指向实际 Caddy 日志目录，并确保运行用户能写入数据库目录、读取日志。使用桥接网络时，将 `--network host` 和 `LISTEN_ADDR` 两项替换为 `-p 127.0.0.1:3000:3000`，带宽统计将反映容器网络接口。
+根据服务器上的实际位置替换 `$PWD/db` 和 `$PWD/caddy_log`。SQLite 会在挂载的数据库目录中读写 `database.db`，挂载已有目录即可沿用账户和历史数据。日志目录末尾的 `:ro` 表示容器只读，宿主机上的 Caddy 仍可写入日志。确保运行用户能写入数据库目录、读取日志。
+
+使用桥接网络时，将 `--network host` 和 `LISTEN_ADDR` 两项替换为 `-p 127.0.0.1:3000:3000`，带宽统计将反映容器网络接口。
 
 ## 日志与访问统计
 
