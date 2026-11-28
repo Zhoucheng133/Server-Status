@@ -1,6 +1,6 @@
 # Server Status
 
-<img src="frontend/public/favicon.svg" width="100px">
+<img src="assets/favicon.svg" width="100px">
 
 用 Fiber、SQLite 和 Vue 监控单台服务器。访客可以查看过去 24 小时的 CPU、内存、网络上下行、各站点请求量，以及按请求次数绘制的访客国家/地区矩形树图。管理员还可以查看每 5 秒更新的实时指标、具体访客 IP，并管理参与统计的日志文件。界面提供简体中文、英文和深浅主题。
 
